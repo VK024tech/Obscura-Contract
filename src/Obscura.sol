@@ -29,6 +29,9 @@ import {MerkleTreeWithHistory} from "./MerkleTreeWithHistory.sol";
 contract Obscura is MerkleTreeWithHistory {
     error Obscura__Invalid_Amount();
     error Obscura__Commitment_Already_Exist();
+    error Obscura__Invalid_Root();
+    error Obscura__NullifierHash_Already_Used();
+    error Obscura__TransferFailed();
 
     uint256 public constant DEPOSIT_AMOUNT = 1 ether;
     uint256 public constant TREE_DEPTH = 20;
@@ -44,6 +47,7 @@ contract Obscura is MerkleTreeWithHistory {
     IVerifier public verifier;
 
     event Deposit(uint256 commitment, uint32 leafIndex, string cid);
+    event Withdrawal(address recipient, uint256 nullifierHash);
 
     constructor(address _verifier, address _feeCollector) MerkleTreeWithHistory(TREE_DEPTH) {
         Verifier = IVerifier(_verifier);
@@ -66,5 +70,31 @@ contract Obscura is MerkleTreeWithHistory {
         emit Deposit(commitment, leafIndex, cid);
     }
 
-    function withdraw() public {}
+    function withdraw(bytes calldata proof, uint256 root, uint256 nullifierHash, address payable recipient) external {
+        // validate correct root
+        require(!roots[root], Obscura__Invalid_Root());
+        // validate nullifier hash to prevent double withdrawal
+        require(!nullifierHashes[nullifierHash], Obscura__NullifierHash_Already_Used());
+        // prepare public inputs
+        uint256[3] memory publicInputs = [
+            root,
+            nullifierHash,
+            uint256(uint160(recipient))
+        ]
+        // verify zk proof
+        require(verifier.verifyProof(proof, publicInputs));
+        // make nullifier as used
+        nullifierHashes[nullifierHash] = true;
+        // transfer amount
+        uint256 amountToSend = DEPOSIT_AMOUNT - calculateFee(DEPOSIT_AMOUNT);
+        (bool success,) = payable(recipient).call{value: amountToSend}("");
+        if(!success){
+            revert Obscura__TransferFailed();
+        }
+        emit withdrawal(recipient, nullifierHash);
+    }
+
+    function calculateFee(uint256 amount) external pure returns (uint256 fee){
+        fee = (amount * FEE_BPS) / 10_000;
+    }
 }
