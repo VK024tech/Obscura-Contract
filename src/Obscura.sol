@@ -25,15 +25,19 @@ pragma solidity ^0.8.24;
 
 import {MerkleTreeWithHistory} from "./MerkleTreeWithHistory.sol";
 import {IVerifier} from "./Interfaces";
+import {ReentrancyGuard} from "@openzeppelin/utils/ReentrancyGuard.sol";
 
-contract Obscura is MerkleTreeWithHistory {
+contract Obscura is MerkleTreeWithHistory, ReentrancyGuard {
     error Obscura__Invalid_Amount();
     error Obscura__Commitment_Already_Exist();
     error Obscura__Invalid_Root();
     error Obscura__NullifierHash_Already_Used();
     error Obscura__TransferFailed();
     error Obscura__InvalidProof();
-
+    error Obscura__Fee_Too_High();
+    error Obscura__Invalid_Relayer();
+    error Obscura__Invalid_Recipient();
+    error Obscura__Only_Relayer_Can_Call();
 
     uint256 public constant DEPOSIT_AMOUNT = 1 ether;
     uint256 public constant TREE_DEPTH = 20;
@@ -46,7 +50,7 @@ contract Obscura is MerkleTreeWithHistory {
     IVerifier public verifier;
 
     event Deposit(bytes32 commitment, uint32 leafIndex, string cid);
-    event Withdrawal(address recipient, uint256 nullifierHash);
+    event Withdrawal(address recipient, uint256 nullifierHash, address relayer);
 
     constructor(address _verifier, address _feeCollector) MerkleTreeWithHistory(TREE_DEPTH) {
         verifier = IVerifier(_verifier);
@@ -75,31 +79,51 @@ contract Obscura is MerkleTreeWithHistory {
         uint256[2] calldata _pC,
         uint256 root,
         uint256 nullifierHash,
-        address payable recipient
-    ) external {
+        address payable recipient,
+        address payable relayer,
+        uint256 relayerFee
+    ) external nonReentrant {
+        // only relayer can call
+        require(msg.sender == relayer, Obscura__Only_Relayer_Can_Call());
         // validate correct root
         require(isKnownRoot(root), Obscura__Invalid_Root());
         // validate nullifier hash to prevent double withdrawal
         require(!nullifierHashes[nullifierHash], Obscura__NullifierHash_Already_Used());
+        // validate relayer address
+        require(relayer != address(0), Obscura__Invalid_Relayer());
+        // validate recipient address
+        require(recipient != address(0), Obscura__Invalid_Recipient());
+
+        // transfer amount
+        uint256 protocol_fee = calculateFee(DEPOSIT_AMOUNT);
+        uint256 amountAfterProtocol = DEPOSIT_AMOUNT - protocol_fee;
+        uint256 finalAmount = amountAfterProtocol - relayerFee;
         // prepare public inputs
-        uint256[3] memory publicInputs = [root, nullifierHash, uint256(uint160(recipient))];
+        uint256[5] memory publicInputs =
+            [root, nullifierHash, uint256(uint160(recipient)), uint256(uint160(relayer)), relayerFee];
+
         // verify zk proof
         require(verifier.verifyProof(_pA, _pB, _pC, publicInputs), Obscura__InvalidProof());
         // make nullifier as used
         nullifierHashes[nullifierHash] = true;
-        // transfer amount
-        uint256 fee = calculateFee(DEPOSIT_AMOUNT);
-        uint256 amountToSend = DEPOSIT_AMOUNT - fee;
-        (bool success,) = recipient.call{value: amountToSend}("");
+        require(relayerFee < DEPOSIT_AMOUNT - protocol_fee, Obscura__Fee_Too_High());
+        // send final amount to recipient
+        (bool success,) = recipient.call{value: finalAmount}("");
         if (!success) {
             revert Obscura__TransferFailed();
         }
-
-        (bool feeSuccess,) = payable(feeCollector).call{value: fee}("")
-        if(!feeSuccess){
+        // deduct relayer fee
+        (bool relayerSuccess,) = relayer.call{value: relayerFee}("");
+        if (!relayerSuccess) {
             revert Obscura__TransferFailed();
         }
-        emit Withdrawal(recipient, nullifierHash);
+        // deduct protocol fee
+        (bool feeSuccess,) = payable(feeCollector).call{value: protocol_fee}("");
+        if (!feeSuccess) {
+            revert Obscura__TransferFailed();
+        }
+
+        emit Withdrawal(recipient, nullifierHash, relayer);
     }
 
     function calculateFee(uint256 amount) internal pure returns (uint256 fee) {
