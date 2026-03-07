@@ -23,8 +23,8 @@
 
 pragma solidity ^0.8.24;
 
-import {Groth16Verifier} from "./Verifier.sol";
 import {MerkleTreeWithHistory} from "./MerkleTreeWithHistory.sol";
+import {IVerifier} from "./Interfaces";
 
 contract Obscura is MerkleTreeWithHistory {
     error Obscura__Invalid_Amount();
@@ -32,25 +32,24 @@ contract Obscura is MerkleTreeWithHistory {
     error Obscura__Invalid_Root();
     error Obscura__NullifierHash_Already_Used();
     error Obscura__TransferFailed();
+    error Obscura__InvalidProof();
+
 
     uint256 public constant DEPOSIT_AMOUNT = 1 ether;
     uint256 public constant TREE_DEPTH = 20;
     uint256 public constant FEE_BPS = 20; // 0.2%
     address public feeCollector;
 
-    mapping(uint256 => bool) public commitments;
+    mapping(bytes32 => bool) public commitments;
     mapping(uint256 => bool) public nullifierHashes;
-
-    mapping(uint256 => bool) public roots;
-    uint256 public currentRoot;
 
     IVerifier public verifier;
 
-    event Deposit(uint256 commitment, uint32 leafIndex, string cid);
+    event Deposit(bytes32 commitment, uint32 leafIndex, string cid);
     event Withdrawal(address recipient, uint256 nullifierHash);
 
     constructor(address _verifier, address _feeCollector) MerkleTreeWithHistory(TREE_DEPTH) {
-        Verifier = IVerifier(_verifier);
+        verifier = IVerifier(_verifier);
         feeCollector = _feeCollector;
     }
 
@@ -70,31 +69,40 @@ contract Obscura is MerkleTreeWithHistory {
         emit Deposit(commitment, leafIndex, cid);
     }
 
-    function withdraw(uint[2] calldata _pA, uint[2][2] calldata _pB, uint[2] calldata _pC,   uint256 root, uint256 nullifierHash, address payable recipient) external {
+    function withdraw(
+        uint256[2] calldata _pA,
+        uint256[2][2] calldata _pB,
+        uint256[2] calldata _pC,
+        uint256 root,
+        uint256 nullifierHash,
+        address payable recipient
+    ) external {
         // validate correct root
-        require(!roots[root], Obscura__Invalid_Root());
+        require(isKnownRoot(root), Obscura__Invalid_Root());
         // validate nullifier hash to prevent double withdrawal
         require(!nullifierHashes[nullifierHash], Obscura__NullifierHash_Already_Used());
         // prepare public inputs
-        uint256[3] memory publicInputs = [
-            root,
-            nullifierHash,
-            uint256(uint160(recipient))
-        ]
+        uint256[3] memory publicInputs = [root, nullifierHash, uint256(uint160(recipient))];
         // verify zk proof
-        require(verifier.verifyProof(_pA,_pB, _pC, publicInputs));
+        require(verifier.verifyProof(_pA, _pB, _pC, publicInputs), Obscura__InvalidProof());
         // make nullifier as used
         nullifierHashes[nullifierHash] = true;
         // transfer amount
-        uint256 amountToSend = DEPOSIT_AMOUNT - calculateFee(DEPOSIT_AMOUNT);
-        (bool success,) = payable(recipient).call{value: amountToSend}("");
-        if(!success){
+        uint256 fee = calculateFee(DEPOSIT_AMOUNT);
+        uint256 amountToSend = DEPOSIT_AMOUNT - fee;
+        (bool success,) = recipient.call{value: amountToSend}("");
+        if (!success) {
             revert Obscura__TransferFailed();
         }
-        emit withdrawal(recipient, nullifierHash);
+
+        (bool feeSuccess,) = payable(feeCollector).call{value: fee}("")
+        if(!feeSuccess){
+            revert Obscura__TransferFailed();
+        }
+        emit Withdrawal(recipient, nullifierHash);
     }
 
-    function calculateFee(uint256 amount) external pure returns (uint256 fee){
+    function calculateFee(uint256 amount) internal pure returns (uint256 fee) {
         fee = (amount * FEE_BPS) / 10_000;
     }
 }
