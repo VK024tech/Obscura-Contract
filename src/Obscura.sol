@@ -70,7 +70,7 @@ contract Obscura is MerkleTreeWithHistory {
         emit Deposit(commitment, leafIndex, cid);
     }
 
-    function withdraw(bytes calldata proof, uint256 root, uint256 nullifierHash, address payable recipient) external {
+    function withdraw(uint[2] calldata _pA, uint[2][2] calldata _pB, uint[2] calldata _pC,   uint256 root, uint256 nullifierHash, address payable recipient) external {
         // validate correct root
         require(!roots[root], Obscura__Invalid_Root());
         // validate nullifier hash to prevent double withdrawal
@@ -82,7 +82,7 @@ contract Obscura is MerkleTreeWithHistory {
             uint256(uint160(recipient))
         ]
         // verify zk proof
-        require(verifier.verifyProof(proof, publicInputs));
+        require(verifier.verifyProof(_pA,_pB, _pC, publicInputs));
         // make nullifier as used
         nullifierHashes[nullifierHash] = true;
         // transfer amount
