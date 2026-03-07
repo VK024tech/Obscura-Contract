@@ -38,6 +38,7 @@ contract Obscura is MerkleTreeWithHistory, ReentrancyGuard {
     error Obscura__Invalid_Relayer();
     error Obscura__Invalid_Recipient();
     error Obscura__Only_Relayer_Can_Call();
+    error Obscura__Invalid_Signal();
 
     uint256 public constant DEPOSIT_AMOUNT = 1 ether;
     uint256 public constant TREE_DEPTH = 20;
@@ -81,7 +82,8 @@ contract Obscura is MerkleTreeWithHistory, ReentrancyGuard {
         uint256 nullifierHash,
         address payable recipient,
         address payable relayer,
-        uint256 relayerFee
+        uint256 relayerFee,
+        uint256 signalHash
     ) external nonReentrant {
         // only relayer can call
         require(msg.sender == relayer, Obscura__Only_Relayer_Can_Call());
@@ -94,19 +96,28 @@ contract Obscura is MerkleTreeWithHistory, ReentrancyGuard {
         // validate recipient address
         require(recipient != address(0), Obscura__Invalid_Recipient());
 
+        uint256 expectedSignalHash = poseidon(
+            uint256(uint160(recipient)),
+            uint256(uint160(relayer)),
+            relayerFee,
+            block.chainid,
+            uint256(uint160(address(this)))
+        );
+        require(expectedSignalHash == signalHash, Obscura__Invalid_Signal());
+
         // transfer amount
         uint256 protocol_fee = calculateFee(DEPOSIT_AMOUNT);
         uint256 amountAfterProtocol = DEPOSIT_AMOUNT - protocol_fee;
+        require(relayerFee < amountAfterProtocol, Obscura__Fee_Too_High());
         uint256 finalAmount = amountAfterProtocol - relayerFee;
+
         // prepare public inputs
-        uint256[5] memory publicInputs =
-            [root, nullifierHash, uint256(uint160(recipient)), uint256(uint160(relayer)), relayerFee];
+        uint256[3] memory publicInputs = [root, nullifierHash, signalHash];
 
         // verify zk proof
         require(verifier.verifyProof(_pA, _pB, _pC, publicInputs), Obscura__InvalidProof());
         // make nullifier as used
         nullifierHashes[nullifierHash] = true;
-        require(relayerFee < DEPOSIT_AMOUNT - protocol_fee, Obscura__Fee_Too_High());
         // send final amount to recipient
         (bool success,) = recipient.call{value: finalAmount}("");
         if (!success) {
