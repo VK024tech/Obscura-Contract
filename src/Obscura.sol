@@ -23,9 +23,10 @@
 
 pragma solidity ^0.8.24;
 
-import {MerkleTreeWithHistory} from "./MerkleTreeWithHistory.sol";
-import {IVerifier} from "./Interfaces";
-import {ReentrancyGuard} from "@openzeppelin/utils/ReentrancyGuard.sol";
+import {MerkleTreeWithHistory, IHasher} from "./MerkleTreeWithHistory.sol";
+import {IVerifier} from "./Interfaces/IVerifier.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {PoseidonT6} from "poseidon-solidity/PoseidonT6.sol";
 
 contract Obscura is MerkleTreeWithHistory, ReentrancyGuard {
     error Obscura__Invalid_Amount();
@@ -41,7 +42,7 @@ contract Obscura is MerkleTreeWithHistory, ReentrancyGuard {
     error Obscura__Invalid_Signal();
 
     uint256 public constant DEPOSIT_AMOUNT = 1 ether;
-    uint256 public constant TREE_DEPTH = 20;
+    uint32 public constant TREE_DEPTH = 20;
     uint256 public constant FEE_BPS = 20; // 0.2%
     address public feeCollector;
 
@@ -53,7 +54,9 @@ contract Obscura is MerkleTreeWithHistory, ReentrancyGuard {
     event Deposit(bytes32 commitment, uint32 leafIndex, string cid);
     event Withdrawal(address recipient, uint256 nullifierHash, address relayer);
 
-    constructor(address _verifier, address _feeCollector) MerkleTreeWithHistory(TREE_DEPTH) {
+    constructor(address _verifier, address _feeCollector, address _hasher)
+        MerkleTreeWithHistory(TREE_DEPTH, IHasher(_hasher))
+    {
         verifier = IVerifier(_verifier);
         feeCollector = _feeCollector;
     }
@@ -88,7 +91,7 @@ contract Obscura is MerkleTreeWithHistory, ReentrancyGuard {
         // only relayer can call
         require(msg.sender == relayer, Obscura__Only_Relayer_Can_Call());
         // validate correct root
-        require(isKnownRoot(root), Obscura__Invalid_Root());
+        require(isKnownRoot(bytes32(root)), Obscura__Invalid_Root());
         // validate nullifier hash to prevent double withdrawal
         require(!nullifierHashes[nullifierHash], Obscura__NullifierHash_Already_Used());
         // validate relayer address
@@ -96,12 +99,14 @@ contract Obscura is MerkleTreeWithHistory, ReentrancyGuard {
         // validate recipient address
         require(recipient != address(0), Obscura__Invalid_Recipient());
 
-        uint256 expectedSignalHash = poseidon(
-            uint256(uint160(recipient)),
-            uint256(uint160(relayer)),
-            relayerFee,
-            block.chainid,
-            uint256(uint160(address(this)))
+        uint256 expectedSignalHash = PoseidonT6.hash(
+            [
+                uint256(uint160(address(recipient))),
+                uint256(uint160(address(relayer))),
+                relayerFee,
+                block.chainid,
+                uint256(uint160(address(this)))
+            ]
         );
         require(expectedSignalHash == signalHash, Obscura__Invalid_Signal());
 
