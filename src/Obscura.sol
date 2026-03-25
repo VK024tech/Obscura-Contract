@@ -1,23 +1,4 @@
-// Layout of Contract:
-// version
-// imports
-// errors
-// interfaces, libraries, contracts
-// Type declarations
-// State variables
-// Events
-// Modifiers
-// Functions
 
-// Layout of Functions:
-// constructor
-// receive function (if exists)
-// fallback function (if exists)
-// external
-// public
-// internal
-// private
-// view & pure functions
 
 // SPDX-License-Identifier: MIT
 
@@ -61,6 +42,12 @@ contract Obscura is MerkleTreeWithHistory, ReentrancyGuard {
         feeCollector = _feeCollector;
     }
 
+    /**
+     * @notice deposit transaction with commitment and cid
+     * @param commitment the commitment to store
+     * @param cid the cid to emit for retrival of data from ipfs at the time of withdrawal
+     */
+
     function deposit(bytes32 commitment, string calldata cid) external payable {
         // validate required amount
         require(msg.value == DEPOSIT_AMOUNT, Obscura__Invalid_Amount());
@@ -72,7 +59,7 @@ contract Obscura is MerkleTreeWithHistory, ReentrancyGuard {
 
         // insert the commitment into merkle tree
         uint32 leafIndex = _insert(commitment);
-
+      
         // emit event for reciever
         emit Deposit(commitment, leafIndex, cid);
     }
