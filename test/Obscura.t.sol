@@ -493,4 +493,16 @@ contract ObscuraTest is Test {
 
         assertEq(feeCollector.balance, feeCollectorBefore + protocolFee);
     }
+
+    function testFuzzDeposit(uint256 randomCommitment) public {
+        vm.assume(randomCommitment < FIELD_SIZE_01);
+        bytes32 commitment = bytes32(randomCommitment);
+
+        vm.assume(!obscura.commitments(commitment));
+
+        vm.prank(user);
+        obscura.deposit{value: 1 ether}(commitment, "cid");
+
+        assertTrue(obscura.commitments(commitment));
+    }
 }
